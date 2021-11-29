@@ -14,6 +14,10 @@ from flask import Flask, jsonify, request
 
 
 # *The* app object
+from gistapi.exceptions import RestException, NotFound
+from gistapi.services.gist_service import GistService, UserDoesNotExist
+from gistapi.validators import clean_post_data
+
 app = Flask(__name__)
 
 
@@ -21,29 +25,6 @@ app = Flask(__name__)
 def ping():
     """Provide a static response to a simple GET request."""
     return "pong"
-
-
-def gists_for_user(username):
-    """Provides the list of gist metadata for a given user.
-
-    This abstracts the /users/:username/gist endpoint from the Github API.
-    See https://developer.github.com/v3/gists/#list-a-users-gists for
-    more information.
-
-    Args:
-        username (string): the user to query gists for
-
-    Returns:
-        The dict parsed from the json response from the Github API.  See
-        the above URL for details of the expected structure.
-    """
-    gists_url = 'https://api.github.com/users/{username}/gists'.format(
-            username=username)
-    response = requests.get(gists_url)
-    # BONUS: What failures could happen?
-    # BONUS: Paging? How does this work for users with tons of gists?
-
-    return response.json()
 
 
 @app.route("/api/v1/search", methods=['POST'])
@@ -58,28 +39,26 @@ def search():
         object contains the list of matches along with a 'status' key
         indicating any failure conditions.
     """
-    post_data = request.get_json()
-    # BONUS: Validate the arguments?
+    username, pattern = clean_post_data(request.get_json())
 
-    username = post_data['username']
-    pattern = post_data['pattern']
+    gist_service = GistService(username=username)
+    try:
+        gists = gist_service.get_gists_by_pattern(pattern, skip_error=True)
+        return jsonify({
+            'status': 'success',
+            'username': username,
+            'pattern': pattern,
+            'matches': gists,
+        })
+    except UserDoesNotExist:
+        raise NotFound('such user does not exist')
 
-    result = {}
-    gists = gists_for_user(username)
-    # BONUS: Handle invalid users?
 
-    for gist in gists:
-        # REQUIRED: Fetch each gist and check for the pattern
-        # BONUS: What about huge gists?
-        # BONUS: Can we cache results in a datastore/db?
-        pass
-
-    result['status'] = 'success'
-    result['username'] = username
-    result['pattern'] = pattern
-    result['matches'] = []
-
-    return jsonify(result)
+@app.errorhandler(RestException)
+def handle_invalid_usage(error):
+   response = jsonify(error.to_dict())
+   response.status_code = error.status_code
+   return response
 
 
 if __name__ == '__main__':
